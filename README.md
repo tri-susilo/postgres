@@ -11,6 +11,7 @@ path-style, HTTPS).
 | `Dockerfile` | Base `postgres:18.6-bookworm` + pgBackRest dari repo PGDG |
 | `docker-compose.yml` | Database + cron backup + helper `info` |
 | `pgbackrest.conf` | Konfigurasi stanza & repo S3 (kredensial di-override via env) |
+| `docker-compose.restore.yml` | Compose khusus proses restore / disaster recovery |
 | `docker-entrypoint-override.sh` | Set direktori pgBackRest + pasang cron backup otomatis |
 | `.env.example` | Contoh isi kredensial NEO Object Storage |
 
@@ -110,6 +111,43 @@ docker compose --profile restore run --rm \
 
 > Cek label backup yang tersedia terlebih dahulu:
 > `docker compose --profile backup run --rm pgbackrest`
+
+## 6b. Restore penuh di host baru / disaster recovery
+
+Untuk skenario total-restore (khususnya di host yang baru/segel), gunakan
+`docker-compose.restore.yml` — berdiri sendiri, tidak butuh stack production:
+
+```bash
+# (pastikan .env sudah berisi kredensial S3 NEO)
+cp .env.example .env   # lalu isi S3_* sesuai console NEO
+
+# 1) reset volume kerja DR (data lama hilang!)
+docker compose -f docker-compose.restore.yml down -v
+
+# 2) restore backup terbaru dari S3 ke volume baru
+docker compose -f docker-compose.restore.yml run --rm restore
+
+#    restores spesifik:
+#    RESTORE_SET=20261108-150924F docker compose -f docker-compose.restore.yml run --rm restore
+#    RESTORE_TARGET="2026-11-08 14:00:00" docker compose -f docker-compose.restore.yml run --rm restore
+
+# 3) start postgres dari data hasil restore (otomatis tunggu restore selesai)
+docker compose -f docker-compose.restore.yml up -d
+
+# cek daftar backup yang ada di S3 tanpa restore
+docker compose -f docker-compose.restore.yml --profile info run --rm info
+```
+
+Penting:
+- Volume di file ini (`restore-data`, dst.) **terpisah** dari production
+  (`db-data`), jadi uji- restore tidak menimpa data production.
+- Setelah restore selesai, pgBackRest otomatis melanjutkan WAL-archive ke repo
+  yang sama (archive-push berjalan kembali; timeline setelah recovery ikut
+  termasuk `.history`).
+- Bila ingin restore langsung menimpa data production di host yang sama, stop
+  stack production dulu (`docker compose down`), lalu gunakan helper
+  `pgbackrest-restore` pada `docker-compose.yml` (bagian 6) yang sudah
+  share volume `db-data`.
 
 ## 7. Check / verify
 
